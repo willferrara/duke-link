@@ -1,0 +1,12 @@
+{
+  "name": "duke-link-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One-click P2P friend-joiner for Horizon MC",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0"
+  }
+}

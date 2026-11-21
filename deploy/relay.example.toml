@@ -1,0 +1,32 @@
+# Example configuration template for duke-link relay-daemon.
+# Copy to /opt/duke-link/relay.toml and customize for your server.
+# Never commit real Ed25519 private keys or personal IP addresses.
+
+[relay]
+# Human-readable server name embedded in generated duke1: invite tickets.
+server_name = "My Horizon MC Server"
+
+# Persistent 32-byte Ed25519 identity key (generated automatically on first run).
+key_path = "/opt/duke-link/duke-relay.key"
+
+# TOML allowlist of permitted friend EndpointIds:
+#   allowed_endpoints = ["<friend-endpoint-id-1>", "<friend-endpoint-id-2>"]
+allowlist_path = "/opt/duke-link/allowlist.toml"
+
+# Local Horizon MC game server TCP address (loopback only).
+horizon_addr = "127.0.0.1:25565"
+
+# Local Horizon MC REST API address for /api/v1/status queries.
+status_addr = "127.0.0.1:8080"
+
+# Directory containing authoritative pack files served over duke-link/sync/1.
+pack_dir = "/opt/duke-link/pack"
+
+# Authoritative PackManifest JSON served over duke-link/sync/1.
+manifest_path = "/opt/duke-link/pack/manifest.json"
+
+# Directory where client crash logs (capped at 2 MiB) are stored.
+crash_dir = "/opt/duke-link/crash-reports"
+
+# Optional custom Iroh relay URL (omit to use default n0 relays).
+# relay_url = "https://relay.example.org/"
