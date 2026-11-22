@@ -1110,6 +1110,7 @@ dependencies = [
  "tauri-build",
  "thiserror 2.0.21",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4555,6 +4556,7 @@ dependencies = [
  "iroh",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "toml 0.8.23",

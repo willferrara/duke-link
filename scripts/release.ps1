@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Tag,
+    [Parameter(Mandatory = $false)]
+    [string]$Tag = "dry-run",
 
     [switch]$DryRun
 )
@@ -9,14 +9,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if (-not $DryRun -and [string]::IsNullOrWhiteSpace($Tag) -or (-not $DryRun -and $Tag -eq "dry-run")) {
+    Write-Error "A release -Tag is required when not using -DryRun."
+    exit 1
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
-    Write-Output "=== [1/4] Frontend syntax check ==="
-    & node --check crates\client-app\src\main.js
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "node --check failed (exit code $LASTEXITCODE)"
-        exit $LASTEXITCODE
+    Write-Output "=== [1/4] Frontend typecheck & Vite build ==="
+    Push-Location (Join-Path $repoRoot "crates\client-app")
+    try {
+        & npx tsc --noEmit
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "npx tsc --noEmit failed (exit code $LASTEXITCODE)"
+            exit $LASTEXITCODE
+        }
+        & npm run build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "npm run build failed (exit code $LASTEXITCODE)"
+            exit $LASTEXITCODE
+        }
+    }
+    finally {
+        Pop-Location
     }
 
     Write-Output "=== [2/4] Workspace hygiene check ==="
@@ -39,11 +55,13 @@ try {
         "tail4dfa1f"
     )
 
-    $skipDirs = @("\.git\", "\target\", "\node_modules\", "\.agents\", "\crash-reports\")
+    $skipDirs = @("\.git\", "\target\", "\node_modules\", "\.agents\", "\crash-reports\", "\dist\")
     $skipRelFiles = @(
         "scripts\release.ps1",
         "scripts\cluster-search.ps1",
-        "AGENTS.md"
+        "AGENTS.md",
+        "crates\client-app\AGENTS.md",
+        "crates\client-app\GEMINI.md"
     )
     $binaryExts = @(".png", ".ico", ".exe", ".dll", ".pdb", ".rlib", ".lib", ".zip", ".gz", ".lock")
 

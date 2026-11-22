@@ -2,11 +2,30 @@
   "name": "duke-link-client",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "One-click P2P friend-joiner for Horizon MC",
   "scripts": {
-    "tauri": "tauri"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.0"
+    "@astryxdesign/cli": "^0.7.17",
+    "@tauri-apps/cli": "^2.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "^0.7.17",
+    "@astryxdesign/theme-neutral": "^0.7.17",
+    "@stylexjs/stylex": "^0.19.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

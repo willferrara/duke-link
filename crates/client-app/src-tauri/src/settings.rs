@@ -17,6 +17,29 @@ pub struct ClientSettings {
     pub local_mc_port: u16,
     #[serde(default)]
     pub instance_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_server_addr: Option<String>,
+}
+
+/// Portable player profile persisted in `./data/profile.toml` (zero Microsoft login).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerProfile {
+    #[serde(default = "default_username")]
+    pub player_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_install_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_server_addr: Option<String>,
+}
+
+impl Default for PlayerProfile {
+    fn default() -> Self {
+        Self {
+            player_name: default_username(),
+            horizon_install_dir: None,
+            direct_server_addr: None,
+        }
+    }
 }
 
 fn default_username() -> String {
@@ -34,6 +57,7 @@ impl Default for ClientSettings {
             username: default_username(),
             local_mc_port: default_mc_port(),
             instance_dir: None,
+            direct_server_addr: None,
         }
     }
 }
@@ -52,6 +76,18 @@ pub enum SettingsError {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
+    },
+    #[error("TOML parse error at {path}: {source}")]
+    TomlDe {
+        path: PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
+    #[error("TOML encode error at {path}: {source}")]
+    TomlSer {
+        path: PathBuf,
+        #[source]
+        source: toml::ser::Error,
     },
     #[error("atomic write failed: {0}")]
     Manifest(#[from] ManifestError),
@@ -122,6 +158,33 @@ pub fn save_settings_atomic(
         source,
     })?;
     atomic_write_bytes(&path, &bytes)?;
+    Ok(())
+}
+
+/// Loads portable `profile.toml` from `data_dir`, returning defaults if absent.
+pub fn load_profile(data_dir: &Path) -> Result<PlayerProfile, SettingsError> {
+    let path = data_dir.join("profile.toml");
+    if !path.exists() {
+        return Ok(PlayerProfile::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|source| SettingsError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    toml::from_str(&raw).map_err(|source| SettingsError::TomlDe {
+        path,
+        source: Box::new(source),
+    })
+}
+
+/// Atomically persists portable `profile.toml` inside `data_dir`.
+pub fn save_profile_atomic(data_dir: &Path, profile: &PlayerProfile) -> Result<(), SettingsError> {
+    let path = data_dir.join("profile.toml");
+    let encoded = toml::to_string_pretty(profile).map_err(|source| SettingsError::TomlSer {
+        path: path.clone(),
+        source,
+    })?;
+    atomic_write_bytes(&path, encoded.as_bytes())?;
     Ok(())
 }
 

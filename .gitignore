@@ -7,4 +7,6 @@ node_modules
 crash-reports/
 .agents/
 AGENTS.md
+GEMINI.md
+crates/client-app/dist/
 scripts/cluster-search.ps1

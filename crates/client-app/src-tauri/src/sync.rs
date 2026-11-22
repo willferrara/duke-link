@@ -50,6 +50,8 @@ pub struct SyncProgressEvent {
 pub struct SyncSummary {
     pub pack_name: String,
     pub pack_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_rev: Option<String>,
     pub downloaded_files: usize,
     pub skipped_files: usize,
     pub preserved_user_files: usize,
@@ -121,6 +123,30 @@ pub fn resolve_safe_instance_path(
     Ok(candidate)
 }
 
+/// Maps a validated manifest relative path to its destination path inside a Horizon MC 26.3
+/// game directory (`horizon-mods/*.hmod`, `horizon-mods.txt`, `dukes-horizon.hpack`).
+/// Non-Horizon paths (such as `mods/...` or `config/...`) are preserved verbatim.
+pub fn map_horizon_target_rel_path(relative_path: &str) -> Result<String, SyncError> {
+    validate_relative_path(relative_path)?;
+    let lower = relative_path.to_ascii_lowercase();
+
+    if lower.ends_with(".hmod") {
+        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        return Ok(format!("horizon-mods/{file_name}"));
+    }
+
+    if lower == "horizon-mods.txt" || lower.ends_with("/horizon-mods.txt") {
+        return Ok("horizon-mods.txt".to_owned());
+    }
+
+    if lower.ends_with(".hpack") {
+        let file_name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        return Ok(file_name.to_owned());
+    }
+
+    Ok(relative_path.to_owned())
+}
+
 /// Computes a deterministic BLAKE3 delta plan against `instance_dir` and `baseline`.
 pub fn plan_manifest_delta(
     instance_dir: &Path,
@@ -129,7 +155,8 @@ pub fn plan_manifest_delta(
 ) -> Result<Vec<PlannedFile>, SyncError> {
     let mut plan = Vec::with_capacity(manifest.files.len());
     for entry in &manifest.files {
-        let target = resolve_safe_instance_path(instance_dir, &entry.path)?;
+        let mapped_rel = map_horizon_target_rel_path(&entry.path)?;
+        let target = resolve_safe_instance_path(instance_dir, &mapped_rel)?;
         let local_hash = if target.exists() {
             Some(compute_file_blake3(&target)?)
         } else {
@@ -227,7 +254,8 @@ where
     let mut bytes_done = 0u64;
 
     for item in to_download {
-        let target_path = resolve_safe_instance_path(instance_dir, &item.entry.path)?;
+        let mapped_rel = map_horizon_target_rel_path(&item.entry.path)?;
+        let target_path = resolve_safe_instance_path(instance_dir, &mapped_rel)?;
 
         let (mut send, mut recv) = conn
             .open_bi()
@@ -291,6 +319,7 @@ where
     Ok(SyncSummary {
         pack_name: manifest.pack_name,
         pack_version: manifest.pack_version,
+        horizon_rev: manifest.horizon_rev,
         downloaded_files: files_done,
         skipped_files,
         preserved_user_files,

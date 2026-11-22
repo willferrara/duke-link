@@ -8,8 +8,9 @@ use shared_protocol::config_overlay::{
     apply_overlay_file, BaselineStore, MergeDecision, OverlayError,
 };
 use shared_protocol::manifest::{
-    compute_file_blake3, read_manifest, validate_relative_path, verify_file_blake3,
-    write_manifest_atomic, FileEntry, FileRole, ManifestError, PackManifest,
+    build_horizon_pack_manifest, compute_bytes_sha256, compute_file_blake3, compute_file_sha256,
+    read_manifest, validate_relative_path, verify_file_blake3, verify_file_sha256,
+    write_manifest_atomic, FileEntry, FileRole, ManifestError, PackManifest, DEFAULT_HORIZON_REV,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -75,9 +76,13 @@ fn test_atomic_manifest_write_and_backup() {
         schema_version: 1,
         pack_name: "horizon-friends".to_owned(),
         pack_version: "1.0.0".to_owned(),
+        horizon_release_tag: None,
+        horizon_rev: None,
+        minecraft_version: None,
         files: vec![FileEntry {
             path: "mods/core.jar".to_owned(),
             blake3: blake3::hash(b"v1").to_hex().to_string(),
+            sha256: None,
             size: 2,
             role: FileRole::EnforcedServerState,
         }],
@@ -96,9 +101,13 @@ fn test_atomic_manifest_write_and_backup() {
         schema_version: 1,
         pack_name: "horizon-friends".to_owned(),
         pack_version: "1.1.0".to_owned(),
+        horizon_release_tag: None,
+        horizon_rev: None,
+        minecraft_version: None,
         files: vec![FileEntry {
             path: "mods/core.jar".to_owned(),
             blake3: blake3::hash(b"v2").to_hex().to_string(),
+            sha256: None,
             size: 2,
             role: FileRole::EnforcedServerState,
         }],
@@ -157,6 +166,7 @@ fn test_three_way_config_merge_preservation_and_enforcement() {
     let entry_v1 = FileEntry {
         path: "config/options.txt".to_owned(),
         blake3: blake3::hash(default_v1).to_hex().to_string(),
+        sha256: None,
         size: default_v1.len() as u64,
         role: FileRole::InitialDefault,
     };
@@ -175,6 +185,7 @@ fn test_three_way_config_merge_preservation_and_enforcement() {
     let entry_v2 = FileEntry {
         path: "config/options.txt".to_owned(),
         blake3: blake3::hash(default_v2).to_hex().to_string(),
+        sha256: None,
         size: default_v2.len() as u64,
         role: FileRole::InitialDefault,
     };
@@ -190,6 +201,7 @@ fn test_three_way_config_merge_preservation_and_enforcement() {
     let entry_v3 = FileEntry {
         path: "config/options.txt".to_owned(),
         blake3: blake3::hash(default_v3).to_hex().to_string(),
+        sha256: None,
         size: default_v3.len() as u64,
         role: FileRole::InitialDefault,
     };
@@ -208,6 +220,7 @@ fn test_three_way_config_merge_preservation_and_enforcement() {
     let mod_entry = FileEntry {
         path: "mods/horizon-sync.jar".to_owned(),
         blake3: blake3::hash(mod_v1).to_hex().to_string(),
+        sha256: Some(compute_bytes_sha256(mod_v1)),
         size: mod_v1.len() as u64,
         role: FileRole::EnforcedServerState,
     };
@@ -325,4 +338,35 @@ fn test_invite_ticket_codec_and_path_validation() {
     assert!(validate_relative_path("/etc/passwd").is_err());
     assert!(validate_relative_path(r"mods\windows.jar").is_err());
     assert!(validate_relative_path("").is_err());
+}
+
+#[test]
+fn test_horizon_pack_manifest_builder_and_sha256_verification() {
+    let dir = unique_test_dir("horizon_pack_manifest");
+    fs::create_dir_all(dir.join("extra-mods")).expect("create extra-mods dir");
+    fs::write(dir.join("dukes-horizon.hpack"), b"hpack-archive-bytes").expect("write hpack");
+    fs::write(dir.join("dukes-core.hmod"), b"core-hmod-bytes").expect("write core hmod");
+    fs::write(dir.join("dukes-content.hmod"), b"content-hmod-bytes").expect("write content hmod");
+    fs::write(dir.join("horizon-mods.txt"), b"mod.dukes_core:true\n").expect("write mods txt");
+    fs::write(dir.join("extra-mods/jade_horizon.hmod"), b"jade-bytes").expect("write extra hmod");
+    fs::write(dir.join("ignored.log"), b"should-be-ignored").expect("write ignored file");
+
+    let manifest =
+        build_horizon_pack_manifest(&dir, "dukes-horizon", "0.1.0").expect("build manifest");
+    assert_eq!(manifest.horizon_rev.as_deref(), Some(DEFAULT_HORIZON_REV));
+    assert_eq!(manifest.files.len(), 5);
+
+    let hpack = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "dukes-horizon.hpack")
+        .expect("hpack included");
+    let sha = hpack.sha256.as_deref().expect("sha256 computed");
+    assert_eq!(
+        compute_file_sha256(&dir.join("dukes-horizon.hpack")).expect("file sha256"),
+        sha
+    );
+    verify_file_sha256(&dir.join("dukes-horizon.hpack"), sha).expect("sha256 verifies");
+
+    let _ = fs::remove_dir_all(&dir);
 }

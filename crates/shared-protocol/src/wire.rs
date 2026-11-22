@@ -71,7 +71,7 @@ pub enum StatusRequest {
 }
 
 /// Snapshot of the local Horizon MC server status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerStatusSnapshot {
     pub online: bool,
     pub players_online: u32,
@@ -79,11 +79,15 @@ pub struct ServerStatusSnapshot {
     pub motd: String,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_rev: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_json: Option<serde_json::Value>,
 }
 
 /// Response messages returned by the relay daemon over [`ALPN_STATUS`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StatusResponse {
     ServerStatus(ServerStatusSnapshot),

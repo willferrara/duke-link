@@ -3,10 +3,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use duke_link_client::launcher::{
-    detect_minecraft_installs_in, encode_servers_dat_nbt, validate_username,
-    write_local_servers_dat, LauncherKind,
+    build_horizon_launch_args, detect_horizon_installs_in, detect_minecraft_installs_in,
+    encode_servers_dat_nbt, resolve_horizon_layout, validate_username, write_local_servers_dat,
+    LauncherKind,
 };
-use duke_link_client::sync::{plan_manifest_delta, resolve_safe_instance_path, SyncAction};
+use duke_link_client::settings::{load_profile, save_profile_atomic, PlayerProfile};
+use duke_link_client::sync::{
+    map_horizon_target_rel_path, plan_manifest_delta, resolve_safe_instance_path, SyncAction,
+};
 use shared_protocol::config_overlay::BaselineStore;
 use shared_protocol::manifest::{FileEntry, FileRole, PackManifest};
 
@@ -167,34 +171,42 @@ fn test_blake3_manifest_delta_planning() {
         schema_version: 1,
         pack_name: "horizon-pack".to_owned(),
         pack_version: "2.0.0".to_owned(),
+        horizon_release_tag: None,
+        horizon_rev: None,
+        minecraft_version: None,
         files: vec![
             FileEntry {
                 path: "mods/core.jar".to_owned(),
                 blake3: matching_hash,
+                sha256: None,
                 size: matching_bytes.len() as u64,
                 role: FileRole::EnforcedServerState,
             },
             FileEntry {
                 path: "mods/enforced.jar".to_owned(),
                 blake3: enforced_server_hash,
+                sha256: None,
                 size: enforced_server_bytes.len() as u64,
                 role: FileRole::EnforcedServerState,
             },
             FileEntry {
                 path: "mods/new.jar".to_owned(),
                 blake3: new_mod_hash,
+                sha256: None,
                 size: new_mod_bytes.len() as u64,
                 role: FileRole::EnforcedServerState,
             },
             FileEntry {
                 path: "config/lod.cfg".to_owned(),
                 blake3: new_default_hash,
+                sha256: None,
                 size: new_default.len() as u64,
                 role: FileRole::InitialDefault,
             },
             FileEntry {
                 path: "config/keys.cfg".to_owned(),
                 blake3: server_keys_v2_hash,
+                sha256: None,
                 size: server_keys_v2.len() as u64,
                 role: FileRole::InitialDefault,
             },
@@ -226,4 +238,56 @@ fn test_resolve_safe_instance_path_blocks_traversal() {
     assert!(resolve_safe_instance_path(&instance_dir, r"mods\backslash.jar").is_err());
 
     let _ = fs::remove_dir_all(&instance_dir);
+}
+
+#[test]
+fn test_horizon_path_mapping_profile_toml_and_launch_args() {
+    assert_eq!(
+        map_horizon_target_rel_path("dukes-core.hmod").expect("core hmod"),
+        "horizon-mods/dukes-core.hmod"
+    );
+    assert_eq!(
+        map_horizon_target_rel_path("extra-mods/jade_horizon.hmod").expect("extra hmod"),
+        "horizon-mods/jade_horizon.hmod"
+    );
+    assert_eq!(
+        map_horizon_target_rel_path("horizon-mods.txt").expect("mods txt"),
+        "horizon-mods.txt"
+    );
+    assert_eq!(
+        map_horizon_target_rel_path("dist/dukes-horizon.hpack").expect("hpack"),
+        "dukes-horizon.hpack"
+    );
+
+    let data_dir = make_temp_dir("profile_toml");
+    let profile = PlayerProfile {
+        player_name: "PlayerOne_26".to_owned(),
+        horizon_install_dir: Some(data_dir.join("horizon")),
+        direct_server_addr: None,
+    };
+    save_profile_atomic(&data_dir, &profile).expect("save profile.toml");
+    let loaded = load_profile(&data_dir).expect("load profile.toml");
+    assert_eq!(loaded, profile);
+
+    let install_root = data_dir.join("horizon");
+    fs::create_dir_all(install_root.join("resources")).expect("create resources");
+    fs::create_dir_all(install_root.join("game").join("horizon-mods")).expect("create game mods");
+    let detected = detect_horizon_installs_in(std::slice::from_ref(&install_root));
+    assert_eq!(detected.len(), 1);
+    let layout = resolve_horizon_layout(&install_root);
+    let args = build_horizon_launch_args(
+        &layout.resources_dir,
+        &layout.game_dir,
+        "PlayerOne_26",
+        "127.0.0.1:25565",
+    );
+    assert_eq!(args.len(), 8);
+    assert_eq!(args[0], "--resources");
+    assert_eq!(args[2], "--game-dir");
+    assert_eq!(args[4], "--name");
+    assert_eq!(args[5], "PlayerOne_26");
+    assert_eq!(args[6], "--server");
+    assert_eq!(args[7], "127.0.0.1:25565");
+
+    let _ = fs::remove_dir_all(&data_dir);
 }

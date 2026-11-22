@@ -27,7 +27,7 @@ pub enum ConnectionPathKind {
 }
 
 /// Live server + tunnel telemetry snapshot returned to the frontend.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunnelStatusSnapshot {
     pub connected: bool,
     pub local_bind_addr: String,
@@ -40,6 +40,10 @@ pub struct TunnelStatusSnapshot {
     pub players_online: u32,
     pub max_players: u32,
     pub motd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_rev: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }

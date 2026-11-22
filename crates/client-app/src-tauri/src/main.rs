@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use duke_link_client::launcher::{
-    detect_minecraft_installs, launch_and_watch_horizon, validate_username, DetectedInstall,
-    LaunchOutcome,
+    detect_horizon_installs, detect_minecraft_installs, launch_and_watch_horizon,
+    resolve_horizon_layout, spawn_horizon_client, validate_username, DetectedInstall,
+    HorizonLayout, LaunchOutcome, SpawnedHorizon,
 };
 use duke_link_client::settings::{
-    load_or_create_client_key, load_settings, resolve_data_dir, save_settings_atomic,
-    ClientSettings,
+    load_or_create_client_key, load_profile, load_settings, resolve_data_dir, save_profile_atomic,
+    save_settings_atomic, ClientSettings, PlayerProfile,
 };
 use duke_link_client::sync::{sync_pack_over_quic, SyncSummary};
 use duke_link_client::tunnel::{
@@ -21,6 +22,7 @@ use duke_link_client::tunnel::{
 use iroh::SecretKey;
 use serde::Serialize;
 use shared_protocol::allowlist::InviteTicket;
+use shared_protocol::manifest::{DEFAULT_HORIZON_RELEASE_TAG, DEFAULT_HORIZON_REV};
 use tauri::{AppHandle, Emitter, RunEvent, State};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{error, info, warn};
@@ -106,6 +108,8 @@ struct AppState {
     data_dir: PathBuf,
     secret_key: SecretKey,
     settings: Mutex<ClientSettings>,
+    profile: Mutex<PlayerProfile>,
+    diagnostic_logs: Mutex<Vec<String>>,
     tunnel: Arc<AsyncMutex<Option<TunnelHandle>>>,
 }
 
@@ -114,15 +118,30 @@ struct ClientBootstrapState {
     client_endpoint_id: String,
     data_dir: String,
     settings: ClientSettings,
+    profile: PlayerProfile,
     server_name: Option<String>,
+    horizon_rev: String,
+    horizon_release_tag: String,
     detected_installs: Vec<DetectedInstall>,
+    detected_horizon_installs: Vec<HorizonLayout>,
     tunnel_active: bool,
+    diagnostic_logs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PlayResult {
     sync: SyncSummary,
     launch: LaunchOutcome,
+}
+
+fn push_diag_log(state: &AppState, line: impl Into<String>) {
+    if let Ok(mut logs) = state.diagnostic_logs.lock() {
+        logs.push(line.into());
+        if logs.len() > 200 {
+            let overflow = logs.len() - 200;
+            logs.drain(0..overflow);
+        }
+    }
 }
 
 fn snapshot_settings(state: &AppState) -> Result<ClientSettings, String> {
@@ -133,9 +152,26 @@ fn snapshot_settings(state: &AppState) -> Result<ClientSettings, String> {
     Ok(guard.clone())
 }
 
+fn snapshot_profile(state: &AppState) -> Result<PlayerProfile, String> {
+    let guard = state
+        .profile
+        .lock()
+        .map_err(|_| "profile lock poisoned".to_owned())?;
+    Ok(guard.clone())
+}
+
+fn snapshot_logs(state: &AppState) -> Vec<String> {
+    state
+        .diagnostic_logs
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 async fn get_client_state(state: State<'_, AppState>) -> Result<ClientBootstrapState, String> {
     let settings = snapshot_settings(&state)?;
+    let profile = snapshot_profile(&state)?;
     let server_name = settings
         .invite_ticket
         .as_deref()
@@ -147,9 +183,14 @@ async fn get_client_state(state: State<'_, AppState>) -> Result<ClientBootstrapS
         client_endpoint_id: state.secret_key.public().to_string(),
         data_dir: state.data_dir.display().to_string(),
         settings,
+        profile,
         server_name,
+        horizon_rev: DEFAULT_HORIZON_REV.to_owned(),
+        horizon_release_tag: DEFAULT_HORIZON_RELEASE_TAG.to_owned(),
         detected_installs: detect_minecraft_installs(),
+        detected_horizon_installs: detect_horizon_installs(&state.data_dir),
         tunnel_active,
+        diagnostic_logs: snapshot_logs(&state),
     })
 }
 
@@ -157,30 +198,76 @@ async fn get_client_state(state: State<'_, AppState>) -> Result<ClientBootstrapS
 fn save_config(
     invite_ticket: String,
     username: String,
+    horizon_install_dir: Option<String>,
+    direct_server_addr: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ClientBootstrapState, String> {
-    let ticket = InviteTicket::decode(&invite_ticket).map_err(|e| e.to_string())?;
+    let trimmed_ticket = invite_ticket.trim();
+    let server_name = if !trimmed_ticket.is_empty() {
+        let ticket = InviteTicket::decode(trimmed_ticket).map_err(|e| e.to_string())?;
+        Some(ticket.server_name)
+    } else {
+        None
+    };
     validate_username(&username).map_err(|e| e.to_string())?;
 
-    let updated = {
+    let cleaned_install = horizon_install_dir
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    let cleaned_direct = direct_server_addr
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+
+    let updated_settings = {
         let mut guard = state
             .settings
             .lock()
             .map_err(|_| "settings lock poisoned".to_owned())?;
-        guard.invite_ticket = Some(invite_ticket.trim().to_owned());
+        guard.invite_ticket = if trimmed_ticket.is_empty() {
+            None
+        } else {
+            Some(trimmed_ticket.to_owned())
+        };
         guard.username = username.trim().to_owned();
+        guard.instance_dir = cleaned_install.clone();
+        guard.direct_server_addr = cleaned_direct.clone();
         guard.clone()
     };
 
-    save_settings_atomic(&state.data_dir, &updated).map_err(|e| e.to_string())?;
+    let updated_profile = {
+        let mut guard = state
+            .profile
+            .lock()
+            .map_err(|_| "profile lock poisoned".to_owned())?;
+        guard.player_name = username.trim().to_owned();
+        guard.horizon_install_dir = cleaned_install;
+        guard.direct_server_addr = cleaned_direct;
+        guard.clone()
+    };
+
+    save_settings_atomic(&state.data_dir, &updated_settings).map_err(|e| e.to_string())?;
+    save_profile_atomic(&state.data_dir, &updated_profile).map_err(|e| e.to_string())?;
+    push_diag_log(
+        &state,
+        format!(
+            "Saved profile.toml (player_name={}) and settings.json",
+            updated_profile.player_name
+        ),
+    );
 
     Ok(ClientBootstrapState {
         client_endpoint_id: state.secret_key.public().to_string(),
         data_dir: state.data_dir.display().to_string(),
-        settings: updated,
-        server_name: Some(ticket.server_name),
+        settings: updated_settings,
+        profile: updated_profile,
+        server_name,
+        horizon_rev: DEFAULT_HORIZON_REV.to_owned(),
+        horizon_release_tag: DEFAULT_HORIZON_RELEASE_TAG.to_owned(),
         detected_installs: detect_minecraft_installs(),
+        detected_horizon_installs: detect_horizon_installs(&state.data_dir),
         tunnel_active: false,
+        diagnostic_logs: snapshot_logs(&state),
     })
 }
 
@@ -230,6 +317,8 @@ async fn poll_server_status(state: State<'_, AppState>) -> Result<TunnelStatusSn
             players_online: 0,
             max_players: 0,
             motd: "Paste an invite ticket to connect".to_owned(),
+            tps: None,
+            horizon_rev: Some(DEFAULT_HORIZON_REV.to_owned()),
             last_error: None,
         });
     };
@@ -251,50 +340,160 @@ async fn poll_server_status(state: State<'_, AppState>) -> Result<TunnelStatusSn
             players_online: snap.players_online,
             max_players: snap.max_players,
             motd: snap.motd,
+            tps: snap.tps,
+            horizon_rev: snap
+                .horizon_rev
+                .or_else(|| Some(DEFAULT_HORIZON_REV.to_owned())),
             last_error: None,
         }),
-        Err(err) => Ok(TunnelStatusSnapshot {
-            connected: false,
-            local_bind_addr,
-            server_name: ticket.server_name,
-            server_endpoint_id: ticket.server_endpoint_id.to_string(),
-            client_endpoint_id: client_id,
-            path_kind: ConnectionPathKind::Unknown,
-            rtt_ms: None,
-            server_online: false,
-            players_online: 0,
-            max_players: 0,
-            motd: "Relay unreachable".to_owned(),
-            last_error: Some(err.to_string()),
-        }),
+        Err(err) => {
+            push_diag_log(&state, format!("Status poll failed: {err}"));
+            Ok(TunnelStatusSnapshot {
+                connected: false,
+                local_bind_addr,
+                server_name: ticket.server_name,
+                server_endpoint_id: ticket.server_endpoint_id.to_string(),
+                client_endpoint_id: client_id,
+                path_kind: ConnectionPathKind::Unknown,
+                rtt_ms: None,
+                server_online: false,
+                players_online: 0,
+                max_players: 0,
+                motd: "Relay unreachable".to_owned(),
+                tps: None,
+                horizon_rev: Some(DEFAULT_HORIZON_REV.to_owned()),
+                last_error: Some(err.to_string()),
+            })
+        }
     }
+}
+
+#[tauri::command]
+async fn launch_horizon_client(
+    player_name: Option<String>,
+    install_dir: Option<String>,
+    server_addr: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SpawnedHorizon, String> {
+    let settings = snapshot_settings(&state)?;
+    let profile = snapshot_profile(&state)?;
+
+    let effective_name = player_name
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| profile.player_name.clone());
+    validate_username(&effective_name).map_err(|e| e.to_string())?;
+
+    let install_root = install_dir
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or(profile.horizon_install_dir.clone())
+        .or(settings.instance_dir.clone())
+        .or_else(|| {
+            detect_horizon_installs(&state.data_dir)
+                .into_iter()
+                .next()
+                .map(|h| h.install_root)
+        })
+        .unwrap_or_else(|| state.data_dir.join("instance"));
+
+    let (target_server, server_name) = if let Some(explicit) = server_addr
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .or(profile.direct_server_addr.clone())
+        .or(settings.direct_server_addr.clone())
+    {
+        (explicit, "Dukes Horizon MC 26.3".to_owned())
+    } else if let Some(raw_ticket) = settings.invite_ticket.as_deref() {
+        let ticket = InviteTicket::decode(raw_ticket).map_err(|e| e.to_string())?;
+        let (_, _, local_bind) =
+            ensure_tunnel_started(&state, &ticket, settings.local_mc_port).await?;
+        (local_bind, ticket.server_name)
+    } else {
+        (
+            format!("127.0.0.1:{}", settings.local_mc_port),
+            "Dukes Horizon MC 26.3".to_owned(),
+        )
+    };
+
+    let spawned =
+        spawn_horizon_client(&install_root, &effective_name, &server_name, &target_server)
+            .map_err(|e| e.to_string())?;
+
+    push_diag_log(
+        &state,
+        format!(
+            "Launched horizon-client (pid={:?}, name={}, server={})",
+            spawned.pid, spawned.player_name, spawned.server_addr
+        ),
+    );
+    Ok(spawned)
+}
+
+#[tauri::command]
+fn get_diagnostic_logs(state: State<'_, AppState>) -> Vec<String> {
+    snapshot_logs(&state)
 }
 
 #[tauri::command]
 async fn sync_and_play(app: AppHandle, state: State<'_, AppState>) -> Result<PlayResult, String> {
     let settings = snapshot_settings(&state)?;
+    let profile = snapshot_profile(&state)?;
     let raw_ticket = settings
         .invite_ticket
         .as_deref()
         .ok_or_else(|| "Please save a duke1: invite ticket first".to_owned())?;
     let ticket = InviteTicket::decode(raw_ticket).map_err(|e| e.to_string())?;
-    validate_username(&settings.username).map_err(|e| e.to_string())?;
+    let player_name = if !profile.player_name.trim().is_empty() {
+        profile.player_name.clone()
+    } else {
+        settings.username.clone()
+    };
+    validate_username(&player_name).map_err(|e| e.to_string())?;
 
-    let (ep, server_addr, _) =
+    let (ep, server_addr, local_bind) =
         ensure_tunnel_started(&state, &ticket, settings.local_mc_port).await?;
-    let instance_dir = settings
-        .instance_dir
+    let install_root = profile
+        .horizon_install_dir
+        .or(settings.instance_dir)
+        .or_else(|| {
+            detect_horizon_installs(&state.data_dir)
+                .into_iter()
+                .next()
+                .map(|h| h.install_root)
+        })
         .unwrap_or_else(|| state.data_dir.join("instance"));
 
-    let sync_summary = sync_pack_over_quic(&ep, &server_addr, &instance_dir, |evt| {
+    let layout = resolve_horizon_layout(&install_root);
+    push_diag_log(
+        &state,
+        format!(
+            "Syncing Horizon pack into {} via {}",
+            layout.game_dir.display(),
+            local_bind
+        ),
+    );
+
+    let sync_summary = sync_pack_over_quic(&ep, &server_addr, &layout.game_dir, |evt| {
         let _ = app.emit("sync-progress", evt);
     })
     .await
     .map_err(|e| e.to_string())?;
 
+    push_diag_log(
+        &state,
+        format!(
+            "Sync complete: {} downloaded, {} skipped ({} bytes)",
+            sync_summary.downloaded_files,
+            sync_summary.skipped_files,
+            sync_summary.bytes_downloaded
+        ),
+    );
+
     let launch_outcome = launch_and_watch_horizon(
-        &instance_dir,
-        &settings.username,
+        &install_root,
+        &player_name,
         &ticket.server_name,
         settings.local_mc_port,
         &ep,
@@ -355,6 +554,17 @@ fn main() {
         }
     };
 
+    let mut profile = match load_profile(&data_dir) {
+        Ok(p) => p,
+        Err(err) => {
+            warn!(error = %err, "failed to load profile.toml, falling back to defaults");
+            PlayerProfile::default()
+        }
+    };
+    if profile.player_name == "Player" && settings.username != "Player" {
+        profile.player_name = settings.username.clone();
+    }
+
     info!(
         client_id = %secret_key.public(),
         data_dir = %data_dir.display(),
@@ -364,10 +574,18 @@ fn main() {
     let tunnel = Arc::new(AsyncMutex::new(None));
     let tunnel_for_exit = Arc::clone(&tunnel);
 
+    let initial_logs = vec![format!(
+        "duke-link initialized (horizon_rev={}, endpoint={})",
+        DEFAULT_HORIZON_REV,
+        secret_key.public()
+    )];
+
     let app_state = AppState {
         data_dir,
         secret_key,
         settings: Mutex::new(settings),
+        profile: Mutex::new(profile),
+        diagnostic_logs: Mutex::new(initial_logs),
         tunnel,
     };
 
@@ -377,6 +595,8 @@ fn main() {
             get_client_state,
             save_config,
             poll_server_status,
+            launch_horizon_client,
+            get_diagnostic_logs,
             sync_and_play,
             stop_tunnel
         ])

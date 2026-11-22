@@ -4,7 +4,7 @@
 
 [relay]
 # Human-readable server name embedded in generated duke1: invite tickets.
-server_name = "My Horizon MC Server"
+server_name = "Dukes Horizon MC 26.3"
 
 # Persistent 32-byte Ed25519 identity key (generated automatically on first run).
 key_path = "/opt/duke-link/duke-relay.key"
@@ -13,17 +13,18 @@ key_path = "/opt/duke-link/duke-relay.key"
 #   allowed_endpoints = ["<friend-endpoint-id-1>", "<friend-endpoint-id-2>"]
 allowlist_path = "/opt/duke-link/allowlist.toml"
 
-# Local Horizon MC game server TCP address (loopback only).
+# Local Horizon MC game server TCP address (loopback only, matching dukes-horizon.service).
 horizon_addr = "127.0.0.1:25565"
 
 # Local Horizon MC REST API address for /api/v1/status queries.
 status_addr = "127.0.0.1:8080"
 
-# Directory containing authoritative pack files served over duke-link/sync/1.
-pack_dir = "/opt/duke-link/pack"
+# Directory containing authoritative Horizon pack files (.hpack, .hmod, horizon-mods.txt)
+# served over duke-link/sync/1.
+pack_dir = "/home/duke/dukes-horizon-server/pack/"
 
-# Authoritative PackManifest JSON served over duke-link/sync/1.
-manifest_path = "/opt/duke-link/pack/manifest.json"
+# Authoritative PackManifest JSON served over duke-link/sync/1 (auto-scanned if absent).
+manifest_path = "/home/duke/dukes-horizon-server/pack/manifest.json"
 
 # Directory where client crash logs (capped at 2 MiB) are stored.
 crash_dir = "/opt/duke-link/crash-reports"

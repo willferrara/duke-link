@@ -6,7 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use iroh::endpoint::Connection;
 use iroh::EndpointId;
 use shared_protocol::manifest::{
-    compute_file_blake3, read_manifest, validate_relative_path, ManifestError,
+    build_horizon_pack_manifest, compute_file_blake3, read_manifest, validate_relative_path,
+    ManifestError, DEFAULT_HORIZON_REV,
 };
 use shared_protocol::wire::{
     read_json_frame, write_chunk_frame, write_json_frame, ServerStatusSnapshot, StatusRequest,
@@ -149,20 +150,24 @@ async fn handle_sync_stream(
 ) -> Result<(), HandlerError> {
     let req: SyncRequest = read_json_frame(recv, MAX_CONTROL_FRAME_BYTES).await?;
     match req {
-        SyncRequest::GetManifest => match read_manifest(&cfg.manifest_path) {
-            Ok(manifest) => {
-                write_json_frame(send, &SyncResponse::Manifest { manifest }).await?;
+        SyncRequest::GetManifest => {
+            let manifest_res = read_manifest(&cfg.manifest_path)
+                .or_else(|_| build_horizon_pack_manifest(&cfg.pack_dir, "dukes-horizon", "0.1.0"));
+            match manifest_res {
+                Ok(manifest) => {
+                    write_json_frame(send, &SyncResponse::Manifest { manifest }).await?;
+                }
+                Err(err) => {
+                    write_json_frame(
+                        send,
+                        &SyncResponse::Error {
+                            message: format!("failed to load pack manifest: {err}"),
+                        },
+                    )
+                    .await?;
+                }
             }
-            Err(err) => {
-                write_json_frame(
-                    send,
-                    &SyncResponse::Error {
-                        message: format!("failed to load pack manifest: {err}"),
-                    },
-                )
-                .await?;
-            }
-        },
+        }
         SyncRequest::GetFile { path } => {
             let safe_path = match resolve_safe_pack_path(&cfg.pack_dir, &path) {
                 Ok(p) => p,
@@ -300,6 +305,8 @@ async fn query_horizon_status(status_addr: &str) -> ServerStatusSnapshot {
         max_players: 0,
         motd: "Horizon server offline".to_owned(),
         version: "unknown".to_owned(),
+        tps: None,
+        horizon_rev: Some(DEFAULT_HORIZON_REV.to_owned()),
         raw_json: None,
     };
 
@@ -341,8 +348,18 @@ async fn query_horizon_status(status_addr: &str) -> ServerStatusSnapshot {
         let version = json
             .get("version")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("horizon")
+            .unwrap_or("horizon 26.3")
             .to_owned();
+        let tps = json
+            .get("tps")
+            .or_else(|| json.pointer("/performance/tps"))
+            .and_then(serde_json::Value::as_f64);
+        let horizon_rev = json
+            .get("horizon_rev")
+            .or_else(|| json.get("rev"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(DEFAULT_HORIZON_REV.to_owned()));
 
         Some(ServerStatusSnapshot {
             online: true,
@@ -350,6 +367,8 @@ async fn query_horizon_status(status_addr: &str) -> ServerStatusSnapshot {
             max_players,
             motd,
             version,
+            tps,
+            horizon_rev,
             raw_json: Some(json),
         })
     };

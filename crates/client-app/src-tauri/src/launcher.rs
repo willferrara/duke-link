@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -26,6 +27,26 @@ pub struct DetectedInstall {
     pub kind: LauncherKind,
     pub root_dir: PathBuf,
     pub assets_dir: Option<PathBuf>,
+}
+
+/// Resolved directory layout for a Horizon MC 26.3 installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HorizonLayout {
+    pub install_root: PathBuf,
+    pub client_bin: Option<PathBuf>,
+    pub resources_dir: PathBuf,
+    pub game_dir: PathBuf,
+}
+
+/// Metadata returned after spawning `horizon-client` directly via Tauri IPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnedHorizon {
+    pub pid: Option<u32>,
+    pub client_bin: PathBuf,
+    pub resources_dir: PathBuf,
+    pub game_dir: PathBuf,
+    pub player_name: String,
+    pub server_addr: String,
 }
 
 /// Result returned when `horizon-client` finishes execution.
@@ -183,25 +204,43 @@ pub fn write_local_servers_dat(
     Ok(path)
 }
 
-/// Locates `horizon-client.exe` (Windows) or `horizon-client` (Unix) inside `instance_dir`
+/// Locates `horizon-client.exe` (Windows) or `horizon-client` (Unix) inside `install_root`
+/// (supporting `client/horizon-windows-x64/`, `horizon-windows-x64/`, `client/`, or root)
 /// or beside the `duke-link` executable.
-pub fn locate_horizon_client(instance_dir: &Path) -> Option<PathBuf> {
+pub fn locate_horizon_client(install_root: &Path) -> Option<PathBuf> {
     let bin_name = if cfg!(windows) {
         "horizon-client.exe"
     } else {
         "horizon-client"
     };
 
-    let in_instance = instance_dir.join(bin_name);
-    if in_instance.is_file() {
-        return Some(in_instance);
+    let candidates = [
+        install_root
+            .join("client")
+            .join("horizon-windows-x64")
+            .join(bin_name),
+        install_root.join("horizon-windows-x64").join(bin_name),
+        install_root.join("client").join(bin_name),
+        install_root.join(bin_name),
+    ];
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let beside_exe = dir.join(bin_name);
-            if beside_exe.is_file() {
-                return Some(beside_exe);
+            for candidate in [
+                dir.join(bin_name),
+                dir.join("client")
+                    .join("horizon-windows-x64")
+                    .join(bin_name),
+            ] {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
@@ -209,10 +248,143 @@ pub fn locate_horizon_client(instance_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Resolves the Horizon `resources` and `game` directories and binary path for `install_root`.
+pub fn resolve_horizon_layout(install_root: &Path) -> HorizonLayout {
+    let client_bin = locate_horizon_client(install_root);
+    let resources_dir = install_root.join("resources");
+    let game_dir = if install_root.join("game").is_dir()
+        || install_root.join("client").is_dir()
+        || !install_root.join("horizon-mods").is_dir()
+    {
+        install_root.join("game")
+    } else {
+        install_root.to_path_buf()
+    };
+
+    HorizonLayout {
+        install_root: install_root.to_path_buf(),
+        client_bin,
+        resources_dir,
+        game_dir,
+    }
+}
+
+/// Pure, deterministic detector for Horizon MC 26.3 installations given candidate roots.
+pub fn detect_horizon_installs_in(roots: &[PathBuf]) -> Vec<HorizonLayout> {
+    let mut found = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        let layout = resolve_horizon_layout(root);
+        let has_marker = layout.client_bin.is_some()
+            || layout.resources_dir.is_dir()
+            || layout.game_dir.join("horizon-mods").is_dir()
+            || root.join("horizon-mods").is_dir();
+        if has_marker
+            && !found
+                .iter()
+                .any(|existing: &HorizonLayout| existing.install_root == layout.install_root)
+        {
+            found.push(layout);
+        }
+    }
+    found
+}
+
+/// Auto-detects Horizon MC 26.3 installations in standard portable and user locations.
+pub fn detect_horizon_installs(data_dir: &Path) -> Vec<HorizonLayout> {
+    let mut roots = vec![data_dir.join("horizon"), data_dir.join("instance")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.join("horizon"));
+            roots.push(dir.to_path_buf());
+        }
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let home_path = PathBuf::from(home);
+        roots.push(home_path.join("dukes-playtest"));
+        roots.push(home_path.join("horizon"));
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        roots.push(PathBuf::from(local_app_data).join("dukes-horizon"));
+    }
+    detect_horizon_installs_in(&roots)
+}
+
+/// Builds the exact zero-Microsoft-login CLI arguments for `horizon-client`:
+/// `--resources <dir> --game-dir <dir> --name <player_name> --server <server_addr>`.
+pub fn build_horizon_launch_args(
+    resources_dir: &Path,
+    game_dir: &Path,
+    player_name: &str,
+    server_addr: &str,
+) -> Vec<OsString> {
+    vec![
+        OsString::from("--resources"),
+        resources_dir.as_os_str().to_os_string(),
+        OsString::from("--game-dir"),
+        game_dir.as_os_str().to_os_string(),
+        OsString::from("--name"),
+        OsString::from(player_name.trim()),
+        OsString::from("--server"),
+        OsString::from(server_addr.trim()),
+    ]
+}
+
+/// Spawns `horizon-client` non-blockingly for one-click friend launch via Tauri IPC.
+pub fn spawn_horizon_client(
+    install_root: &Path,
+    player_name: &str,
+    server_name: &str,
+    server_addr: &str,
+) -> Result<SpawnedHorizon, LauncherError> {
+    validate_username(player_name)?;
+    let layout = resolve_horizon_layout(install_root);
+    let client_bin = layout
+        .client_bin
+        .clone()
+        .ok_or_else(|| LauncherError::ClientBinaryNotFound(install_root.to_path_buf()))?;
+
+    let _ = fs::create_dir_all(&layout.game_dir);
+    write_local_servers_dat(&layout.game_dir, server_name, server_addr)?;
+
+    let args = build_horizon_launch_args(
+        &layout.resources_dir,
+        &layout.game_dir,
+        player_name,
+        server_addr,
+    );
+
+    info!(
+        bin = %client_bin.display(),
+        player_name = %player_name.trim(),
+        server_addr = %server_addr.trim(),
+        "spawning horizon-client"
+    );
+
+    let child = std::process::Command::new(&client_bin)
+        .current_dir(&layout.game_dir)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    Ok(SpawnedHorizon {
+        pid: Some(child.id()),
+        client_bin,
+        resources_dir: layout.resources_dir,
+        game_dir: layout.game_dir,
+        player_name: player_name.trim().to_owned(),
+        server_addr: server_addr.trim().to_owned(),
+    })
+}
+
 /// Spawns `horizon-client` pointed at `127.0.0.1:<local_port>`, watches its exit code, and
 /// automatically uploads crash output over `duke-link/status/1` on non-zero exit.
 pub async fn launch_and_watch_horizon(
-    instance_dir: &Path,
+    install_root: &Path,
     username: &str,
     server_name: &str,
     local_port: u16,
@@ -221,10 +393,20 @@ pub async fn launch_and_watch_horizon(
 ) -> Result<LaunchOutcome, LauncherError> {
     validate_username(username)?;
     let host_port = format!("127.0.0.1:{local_port}");
-    write_local_servers_dat(instance_dir, server_name, &host_port)?;
+    let layout = resolve_horizon_layout(install_root);
+    let _ = fs::create_dir_all(&layout.game_dir);
+    write_local_servers_dat(&layout.game_dir, server_name, &host_port)?;
 
-    let client_bin = locate_horizon_client(instance_dir)
-        .ok_or_else(|| LauncherError::ClientBinaryNotFound(instance_dir.to_path_buf()))?;
+    let client_bin = layout
+        .client_bin
+        .ok_or_else(|| LauncherError::ClientBinaryNotFound(install_root.to_path_buf()))?;
+
+    let args = build_horizon_launch_args(
+        &layout.resources_dir,
+        &layout.game_dir,
+        username,
+        &host_port,
+    );
 
     info!(
         bin = %client_bin.display(),
@@ -234,11 +416,8 @@ pub async fn launch_and_watch_horizon(
     );
 
     let output = Command::new(&client_bin)
-        .current_dir(instance_dir)
-        .arg("--username")
-        .arg(username.trim())
-        .arg("--server")
-        .arg(&host_port)
+        .current_dir(&layout.game_dir)
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -257,7 +436,7 @@ pub async fn launch_and_watch_horizon(
         "horizon-client exited with non-zero status; collecting crash report"
     );
     let crash_payload =
-        collect_crash_report(instance_dir, exit_code, &output.stdout, &output.stderr);
+        collect_crash_report(&layout.game_dir, exit_code, &output.stdout, &output.stderr);
     let uploaded =
         match upload_crash_log(endpoint, server_addr, "horizon-client", &crash_payload).await {
             Ok((stored_name, bytes)) => {

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::manifest::{
-    atomic_write_bytes, compute_file_blake3, FileEntry, FileRole, ManifestError,
+    atomic_write_bytes, compute_bytes_sha256, compute_file_blake3, FileEntry, FileRole,
+    ManifestError,
 };
 
 /// Persistent local store recording the last-synced BLAKE3 baseline hash for each pack file.
@@ -130,13 +131,23 @@ pub fn apply_overlay_file(
         MergeDecision::InstallNew
         | MergeDecision::OverwriteEnforced
         | MergeDecision::UpdateUnmodifiedDefault => {
-            let actual = blake3::hash(server_bytes).to_hex().to_string();
-            if !actual.eq_ignore_ascii_case(&entry.blake3) {
+            let actual_blake3 = blake3::hash(server_bytes).to_hex().to_string();
+            if !actual_blake3.eq_ignore_ascii_case(&entry.blake3) {
                 return Err(OverlayError::ServerHashMismatch {
                     path: entry.path.clone(),
                     expected: entry.blake3.to_ascii_lowercase(),
-                    actual,
+                    actual: actual_blake3,
                 });
+            }
+            if let Some(expected_sha256) = entry.sha256.as_deref() {
+                let actual_sha256 = compute_bytes_sha256(server_bytes);
+                if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+                    return Err(OverlayError::ServerHashMismatch {
+                        path: entry.path.clone(),
+                        expected: expected_sha256.to_ascii_lowercase(),
+                        actual: actual_sha256,
+                    });
+                }
             }
             atomic_write_bytes(target_path, server_bytes)?;
             baseline

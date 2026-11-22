@@ -12,25 +12,26 @@ Environment=RUST_LOG=info
 ExecStart=/opt/duke-link/duke-link-relay \
     --key-path /opt/duke-link/duke-relay.key \
     --allowlist /opt/duke-link/allowlist.toml \
-    --pack-dir /opt/duke-link/pack \
-    --manifest-path /opt/duke-link/pack/manifest.json \
+    --pack-dir /home/duke/dukes-horizon-server/pack \
+    --manifest-path /home/duke/dukes-horizon-server/pack/manifest.json \
     --crash-dir /opt/duke-link/crash-reports \
     --mc-addr 127.0.0.1:25565 \
     --status-addr 127.0.0.1:8080 \
-    --server-name "Horizon MC Server"
+    --server-name "Dukes Horizon MC 26.3"
 Restart=always
 RestartSec=5
 
 # Sandboxing & hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
+ReadOnlyPaths=/home/duke/dukes-horizon-server/pack
 ReadWritePaths=/opt/duke-link
 
 [Install]

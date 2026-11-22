@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "org.dukelink.client",
   "build": {
-    "frontendDist": "../src"
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -12,10 +15,10 @@
       {
         "label": "main",
         "title": "Duke Link",
-        "width": 520,
-        "height": 640,
-        "minWidth": 460,
-        "minHeight": 560,
+        "width": 600,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 600,
         "resizable": true,
         "center": true,
         "decorations": true,
