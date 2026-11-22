@@ -289,6 +289,35 @@ fn test_allowlist_enforcement_and_validation() {
 }
 
 #[test]
+fn test_allowlist_allow_all_mode() {
+    let listed = SecretKey::generate().public();
+    let random_peer_a = SecretKey::generate().public();
+    let random_peer_b = SecretKey::generate().public();
+
+    // allow_all = true accepts any EndpointId even when allowed_endpoints is empty or omitted.
+    let open = Allowlist::from_toml_str("allow_all = true\n").expect("parse open allowlist");
+    assert!(open.allow_all);
+    assert!(open.is_allowed(&listed));
+    assert!(open.is_allowed(&random_peer_a));
+    assert!(open.is_allowed(&random_peer_b));
+
+    // allow_all = false still strictly enforces allowed_endpoints.
+    let strict_toml = format!("allow_all = false\nallowed_endpoints = [\"{listed}\"]\n");
+    let strict = Allowlist::from_toml_str(&strict_toml).expect("parse strict allowlist");
+    assert!(!strict.allow_all);
+    assert!(strict.is_allowed(&listed));
+    assert!(!strict.is_allowed(&random_peer_a));
+    assert!(!strict.is_allowed(&random_peer_b));
+
+    // Omitting allow_all defaults to false for safety.
+    let default_toml = format!("allowed_endpoints = [\"{listed}\"]\n");
+    let default_list = Allowlist::from_toml_str(&default_toml).expect("parse default allowlist");
+    assert!(!default_list.allow_all);
+    assert!(default_list.is_allowed(&listed));
+    assert!(!default_list.is_allowed(&random_peer_a));
+}
+
+#[test]
 fn test_invite_ticket_codec_and_path_validation() {
     let server_id = SecretKey::generate().public();
     let ticket = InviteTicket {

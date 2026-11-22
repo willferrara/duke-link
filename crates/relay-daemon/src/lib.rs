@@ -124,6 +124,7 @@ pub async fn start_relay(
 
     info!(
         endpoint_id = %endpoint.id(),
+        allow_all = allowlist.allow_all,
         allowlist_count = allowlist.len(),
         mc_addr = %relay_cfg.mc_addr,
         pack_dir = %relay_cfg.pack_dir.display(),

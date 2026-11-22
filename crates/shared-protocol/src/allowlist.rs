@@ -36,12 +36,15 @@ pub enum AllowlistError {
 #[derive(Debug, Deserialize)]
 struct AllowlistToml {
     #[serde(default)]
+    pub allow_all: bool,
+    #[serde(default)]
     allowed_endpoints: Vec<String>,
 }
 
 /// Strict Ed25519 [`EndpointId`] allowlist checked on every incoming QUIC connection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Allowlist {
+    pub allow_all: bool,
     allowed: HashSet<EndpointId>,
 }
 
@@ -49,11 +52,13 @@ impl Allowlist {
     /// Creates an allowlist directly from an iterator of validated [`EndpointId`]s.
     pub fn from_ids(ids: impl IntoIterator<Item = EndpointId>) -> Self {
         Self {
+            allow_all: false,
             allowed: ids.into_iter().collect(),
         }
     }
 
-    /// Parses a TOML allowlist containing `allowed_endpoints = ["<endpoint-id>", ...]`.
+    /// Parses a TOML allowlist containing optional `allow_all = false` and
+    /// `allowed_endpoints = ["<endpoint-id>", ...]`.
     pub fn from_toml_str(input: &str) -> Result<Self, AllowlistError> {
         let parsed: AllowlistToml = toml::from_str(input)?;
         let mut allowed = HashSet::with_capacity(parsed.allowed_endpoints.len());
@@ -66,7 +71,10 @@ impl Allowlist {
                 })?;
             allowed.insert(id);
         }
-        Ok(Self { allowed })
+        Ok(Self {
+            allow_all: parsed.allow_all,
+            allowed,
+        })
     }
 
     /// Loads and validates a TOML allowlist from disk.
@@ -78,9 +86,9 @@ impl Allowlist {
         Self::from_toml_str(&content)
     }
 
-    /// Returns `true` if `id` is explicitly permitted to connect.
+    /// Returns `true` if `allow_all` is enabled or `id` is explicitly permitted to connect.
     pub fn is_allowed(&self, id: &EndpointId) -> bool {
-        self.allowed.contains(id)
+        self.allow_all || self.allowed.contains(id)
     }
 
     /// Returns the number of permitted peers in the allowlist.

@@ -10,6 +10,7 @@ server_name = "Dukes Horizon MC 26.3"
 key_path = "/opt/duke-link/duke-relay.key"
 
 # TOML allowlist of permitted friend EndpointIds:
+#   allow_all = false  # Set true to allow any client with the duke1: invite ticket
 #   allowed_endpoints = ["<friend-endpoint-id-1>", "<friend-endpoint-id-2>"]
 allowlist_path = "/opt/duke-link/allowlist.toml"
 
